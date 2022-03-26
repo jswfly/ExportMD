@@ -6,11 +6,13 @@
 # description: 自动导出语雀知识库为Markdown格式
 # -----------------------------------------
 
+from operator import contains
 from prettytable import PrettyTable
 import re
 import os
 import aiohttp
 import asyncio
+import time
 from urllib import parse
 from PyInquirer import prompt, Separator
 from examples import custom_style_2
@@ -82,9 +84,25 @@ class ExportMD:
     # 获取正文 Markdown 源代码
     async def get_body(self, repo_id, slug):
         api = "/repos/%s/docs/%s" % (repo_id, slug)
+        
         async with aiohttp.ClientSession() as session:
-            result = await self.req(session, api)
+            result = {}
+            retryCount = 5
+            while retryCount > 0 :
+                result = await self.req(session, api)
+                if result != {'status': 429, 'message': 'Too Many Requests'} :
+                    break
+                retryCount -= 1
+                time.sleep(0.2)
+                print('重试' + str(retryCount) + '!!!!!')
+                
+            if retryCount == 0 :
+                print('导出失败！！！！！！！')
+                return ''
             body = result['data']['body']
+            body = re.sub("<a name=\".*\"></a>","", body)  # 正则去除语雀导出的<a>标签
+            body = re.sub(r'\<br \/\>!\[image.png\]',"\n![image.png]",body) # 正则去除语雀导出的图片后紧跟的<br \>标签
+            body = re.sub(r'\)\<br \/\>', ")\n", body)  # 正则去除语雀导出的图片后紧跟的<br \>标签
             return body
 
     # 选择知识库
@@ -131,11 +149,13 @@ class ExportMD:
                 )
 
         self.save(repo_name, title, new_body)
-
         print("📑 %s 导出成功！" % color(title, fore='green', style='bright'))
 
     # 将md里的图片地址替换成本地的图片地址
     async def to_local_image_src(self, body):
+        body = re.sub(r'\<br \/\>!\[image.png\]',"\n![image.png]",body) # 正则去除语雀导出的图片后紧跟的<br \>标签
+        body = re.sub(r'\)\<br \/\>', ")\n", body)  # 正则去除语雀导出的图片后紧跟的<br \>标签
+        
         pattern = r"!\[(?P<img_name>.*?)\]" \
                   r"\((?P<img_src>https:\/\/cdn\.nlark\.com\/yuque.*\/(?P<slug>\d+)\/(?P<filename>.*?\.[a-zA-z]+)).*\)"
         repl = r"![\g<img_name>](./assets/\g<filename>)"
@@ -181,10 +201,10 @@ class ExportMD:
 
             repo_id = self.repo[repo_name]
             docs = await self.get_docs(repo_id)
-
             await asyncio.gather(
                 *(self.download_md(repo_id, slug, repo_name, title) for slug, title in docs.items())
             )
+            
 
         print("\n" + color('🎉 导出完成！', fore='green', style='bright'))
         print("已导出到：" + color(os.path.realpath(self.export_dir), fore='green', style='bright'))
